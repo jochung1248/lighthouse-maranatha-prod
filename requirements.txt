@@ -1,0 +1,9 @@
+google-adk
+gcloud
+google-api-python-client
+google-auth-oauthlib
+#google-auth
+#google-auth-httplib2
+
+pandas
+numpy
