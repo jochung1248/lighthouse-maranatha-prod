@@ -13,7 +13,7 @@ import json
 # --- CONFIG ---
 SCOPES = ['https://www.googleapis.com/auth/drive.file']  # or 'https://www.googleapis.com/auth/drive'
 TARGET_FOLDER_ID = '1PoqUg00k3BA1HOG1Nn4HyqpUhvdUT-YX'  # optional
-
+TEMPLATE_PRESENTATION_ID = '1FCivH5ECj72APlWDdsu_3BoHZN9LWbBl'
 
 
 def create_slides_file():
@@ -43,7 +43,7 @@ def create_slides_file():
 
         # Generate a unique presentation name
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        title = f"My New Presentation - {timestamp}"
+        title = f"{timestamp}"
 
         # Create via Drive API (avoids ownership edge cases)
         file_metadata = {
@@ -53,7 +53,14 @@ def create_slides_file():
         if TARGET_FOLDER_ID:
             file_metadata['parents'] = [TARGET_FOLDER_ID]
 
-        file = drive_service.files().create(body=file_metadata, fields='id').execute()
+        # Copy template presentation
+        file = drive_service.files().copy(
+            fileId=TEMPLATE_PRESENTATION_ID,
+            body=file_metadata
+        ).execute()
+
+
+        #file = drive_service.files().create(body=file_metadata, fields='id').execute()
         presentation_id = file.get('id')
         
         print(f"✅ Successfully created presentation: '{title}'")
