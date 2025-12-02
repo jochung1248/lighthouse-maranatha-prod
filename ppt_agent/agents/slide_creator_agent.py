@@ -11,7 +11,7 @@ from google.adk.agents import Agent
 import json
 
 # --- CONFIG ---
-SCOPES = ['https://www.googleapis.com/auth/drive.file']  # or 'https://www.googleapis.com/auth/drive'
+SCOPES = ['https://www.googleapis.com/auth/drive']  # or 'https://www.googleapis.com/auth/drive'
 TARGET_FOLDER_ID = '1PoqUg00k3BA1HOG1Nn4HyqpUhvdUT-YX'  # optional
 TEMPLATE_PRESENTATION_ID = '1FCivH5ECj72APlWDdsu_3BoHZN9LWbBl'
 
@@ -70,7 +70,7 @@ def create_slides_file():
         print(f"❌ An API error occurred: {error}")
 
 
-def add_slide(presentation_id, english, korean, insertion_index=1, layout='TITLE'):
+def add_lyric_slide(presentation_id, english, korean, insertion_index=5):
     """
     Create a new slide, remove default placeholders, then add two text boxes:
     - English (top) — yellow, Arial Black, 24pt, centered
@@ -89,8 +89,8 @@ def add_slide(presentation_id, english, korean, insertion_index=1, layout='TITLE
         page_height_pt = pres['pageSize']['height']['magnitude'] / 12700.0
 
         full_width = {"magnitude": page_width_pt, "unit": "PT"}
-        eng_height = 75
-        korean_height = 75
+        eng_height = 90
+        korean_height = 90
         
         eng_pt = {"magnitude": eng_height, "unit": "PT"}
         kor_pt = {"magnitude": korean_height, "unit": "PT"}
@@ -101,8 +101,8 @@ def add_slide(presentation_id, english, korean, insertion_index=1, layout='TITLE
         kor_id = f"kor_{uuid.uuid4().hex[:8]}"
 
         # Y positions (translateY) measured in PT from top
-        eng_translate_y = page_height_pt - 150
-        kor_translate_y = page_height_pt - 75
+        eng_translate_y = page_height_pt - 180
+        kor_translate_y = page_height_pt - 90
 
         requests = [
             # create slide
@@ -110,7 +110,7 @@ def add_slide(presentation_id, english, korean, insertion_index=1, layout='TITLE
                 "createSlide": {
                     "objectId": slide_id,
                     "insertionIndex": str(insertion_index),
-                    "slideLayoutReference": {"predefinedLayout": layout}
+                    #"slideLayoutReference": {"predefinedLayout": layout}
                 }
             },
             # set background to black
@@ -144,7 +144,16 @@ def add_slide(presentation_id, english, korean, insertion_index=1, layout='TITLE
                             "translateY": eng_translate_y,
                             "unit": "PT"
                         }
-                    }
+                    },
+                }
+            },
+            {
+                "updateShapeProperties": {
+                    "objectId": eng_id,
+                    "shapeProperties": {
+                        "contentAlignment": "BOTTOM"   # options: TOP, MIDDLE, BOTTOM
+                    },
+                    "fields": "contentAlignment"
                 }
             },
             # create Korean text box (below)
@@ -165,6 +174,15 @@ def add_slide(presentation_id, english, korean, insertion_index=1, layout='TITLE
                     }
                 }
             },
+            {
+                "updateShapeProperties": {
+                    "objectId": kor_id,
+                    "shapeProperties": {
+                        "contentAlignment": "TOP"   # options: TOP, MIDDLE, BOTTOM
+                    },
+                    "fields": "contentAlignment"
+                }
+            },
             # insert english text
             {"insertText": {"objectId": eng_id, "text": english}},
             # style english (Arial Black, 24pt, yellow)
@@ -173,7 +191,7 @@ def add_slide(presentation_id, english, korean, insertion_index=1, layout='TITLE
                     "objectId": eng_id,
                     "style": {
                         "fontFamily": "Arial Black",
-                        "fontSize": {"magnitude": 20, "unit": "PT"},
+                        "fontSize": {"magnitude": 26, "unit": "PT"},
                         "foregroundColor": {"opaqueColor": {"rgbColor": {"red": 1.0, "green": 1.0, "blue": 0.0}}}
                     },
                     "fields": "fontFamily,fontSize,foregroundColor"
@@ -189,11 +207,12 @@ def add_slide(presentation_id, english, korean, insertion_index=1, layout='TITLE
                 "updateTextStyle": {
                     "objectId": kor_id,
                     "style": {
-                        "fontFamily": "Arial Black",
-                        "fontSize": {"magnitude": 24, "unit": "PT"},
-                        "foregroundColor": {"opaqueColor": {"rgbColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}}
+                        "fontFamily": "Calibri",
+                        "fontSize": {"magnitude": 30, "unit": "PT"},
+                        "foregroundColor": {"opaqueColor": {"rgbColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}},
+                        "bold": True
                     },
-                    "fields": "fontFamily,fontSize,foregroundColor"
+                    "fields": "fontFamily,fontSize,foregroundColor, bold"
                 }
             },
             # center korean paragraph
@@ -233,10 +252,9 @@ def create_presentation(text_pairs: list[dict[str, str]]) -> None:
     presentation_id = create_slides_file()
     
     for pair in reversed(text_pairs):
-        add_slide(presentation_id, pair['english'], pair['korean'])
+        add_lyric_slide(presentation_id, pair['english'], pair['korean'])
     
     print("Presentation created with URL: https://docs.google.com/presentation/d/{}/edit".format(presentation_id))
-    
     
 """ 
 def create_presentation_from_file(file_path: str) -> str:
