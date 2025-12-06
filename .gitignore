@@ -1,3 +1,5 @@
 credentials.json
 token.json
 lighthouse-maranatha-prod-de14bde74ca0.json
+./ppt_agent/__pycache__/
+./ppt_agent/agents/__pycache__/

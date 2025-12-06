@@ -17,8 +17,73 @@ import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 import logging
+import html
 
-SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/youtube/v3']
+
+
+
+SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl", "https://www.googleapis.com/auth/drive"]
+
+
+
+def preview_youtube_playlist(playlist_id: str):
+    """
+    Fetch a YouTube playlist and return:
+      - video titles
+      - caption snippet (first available caption)
+
+    Args:
+        playlist_id: YouTube playlist ID
+
+    Returns:
+        List of dicts: [{'video_id', 'title'}]
+    """
+
+    print("🔐 Authenticating YouTube API...")
+    creds = None
+    # Authenticate if credentials not provided
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file('./credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+
+    try:
+        youtube = build("youtube", "v3", credentials=creds)
+
+        videos = []
+        next_page_token = None
+
+        print(f"📂 Fetching playlist items for playlist: {playlist_id}")
+
+        # --- STEP 1: Fetch playlist videos ---
+        while True:
+            req = youtube.playlistItems().list(
+                part="snippet", playlistId=playlist_id, maxResults=50, pageToken=next_page_token
+            )
+            res = req.execute()
+
+            for item in res.get("items", []):
+                video_id = item["snippet"]["resourceId"]["videoId"]
+                title = item["snippet"]["title"]
+                videos.append({"video_id": video_id, "title": title})
+
+            next_page_token = res.get("nextPageToken")
+            if not next_page_token:
+                break
+
+        print(f"📺 Found {len(videos)} videos in playlist.")
+        return videos
+
+    except HttpError as error:
+        logging.error(f"❌ YouTube API error: {error}")
+        return None
+
 
 
 def find_files_by_name(search_name: str, folder_id: str = '1hiSf6DSAO2RIv7ZCT7ltU8uBYQFvaOQu'):
@@ -112,6 +177,89 @@ def find_files_by_name(search_name: str, folder_id: str = '1hiSf6DSAO2RIv7ZCT7lt
         return None
 
 
+def drive_save_lyrics(lyrics_list: list[dict], folder_id: str = '1hiSf6DSAO2RIv7ZCT7ltU8uBYQFvaOQu'):
+    """
+    Save each song's lyrics as a separate Google Doc in the given Drive folder.
+    Each created doc's name will be "KoreanTitle / EnglishTitle" (falling back to whichever is available).
+
+    Args:
+        lyrics_list: list of dicts with keys:
+            - 'korean_title' or 'korean'
+            - 'english_title' or 'english'
+            - 'korean_lyrics' or 'korean'
+            - 'english_lyrics' or 'english'
+        folder_id: Drive folder ID to place created docs into.
+
+    Returns:
+        List of dicts: [{'id': <doc_id>, 'name': <doc_name>}, ...]
+    """
+    creds = None
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file('./credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+
+    drive_service = build('drive', 'v3', credentials=creds)
+    docs_service = build('docs', 'v1', credentials=creds)
+
+    created_files = []
+    for entry in lyrics_list:
+        # normalize fields
+        eng_title = entry.get('english_title') or entry.get('english') or ''
+        kor_title = entry.get('korean_title') or entry.get('korean') or ''
+        eng_lyrics = entry.get('english_lyrics') or entry.get('english') or ''
+        kor_lyrics = entry.get('korean_lyrics') or entry.get('korean') or ''
+
+        name_parts = []
+        if kor_title:
+            name_parts.append(kor_title.strip())
+        if eng_title:
+            name_parts.append(eng_title.strip())
+        doc_name = " / ".join(name_parts) if name_parts else f"lyrics-{uuid.uuid4().hex[:8]}"
+
+        try:
+            # Create a Google Doc (blank) in the specified folder
+            file_metadata = {
+                'name': doc_name,
+                'parents': [folder_id] if folder_id else [],
+                'mimeType': 'application/vnd.google-apps.document'
+            }
+            new_file = drive_service.files().create(body=file_metadata, fields='id,name').execute()
+            doc_id = new_file.get('id')
+
+            # Build the content to insert
+            parts = []
+            if eng_title:
+                parts.append(f"English Title: {eng_title}\n")
+            if eng_lyrics:
+                parts.append(f"{eng_lyrics}\n\n")
+            if kor_title:
+                parts.append(f"Korean Title: {kor_title}\n")
+            if kor_lyrics:
+                parts.append(f"{kor_lyrics}\n")
+
+            content = "\n".join(parts).strip() or ""
+
+            if content:
+                # Insert text at the start of the document
+                requests = [
+                    {"insertText": {"location": {"index": 1}, "text": content}}
+                ]
+                docs_service.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
+
+            created_files.append({"id": doc_id, "name": new_file.get('name')})
+        except Exception as e:
+            logging.error(f"Failed to create doc for '{doc_name}': {e}")
+            # continue with other entries
+
+    return created_files
+
 
 
 lyric_retriever_agent = Agent(
@@ -122,34 +270,27 @@ lyric_retriever_agent = Agent(
 		You are the Lyric Retriever Agent. Your task is to fetch the lyrics for a list of songs provided by the user. 
 		
 		Follow these steps:
-		1. Receive a list of worship song titles - sometimes the artist as well - from the user. These will mostly be in Korean.
+        1. You will be given a URL link to a YouTube playlist containing worship songs.
+        2. Use the 'preview_youtube_playlist' tool to extract video titles from the playlist. Get the playlist ID from the URL.
 		
-		2. For EACH song title, FIRST attempt to search for an existing lyrics file in the Google Drive lyrics folder:
-			- Use the find_files_by_name() function to search for files matching the song title (Korean names fully supported)
+		3. Based on the youtube song titles and the song titles provided by the user, attempt to search for an existing lyrics file in the Google Drive lyrics folder in both langauges (do two separate searches for English and Korean):
+			- Use the find_files_by_name() function to search for files matching the song title
             - Remove any numbers or special characters from the song title to improve matching
 			- If a file is found, read and use those lyrics. You may have to clean up random letters and numbers from the text.
 			- If multiple files match, list them to the user and ask which one to select
             - If you have found files, let the user know which files you have found and are using.
-            - Do not verbose or hallucinate. If you cannot find any files, proceed to the next step. 
 		
-		3. If no file exists in Google Drive for a song, get both the official English and Korean titles for that song from the web.
+		4. If a song's lyrics can't be found in the Google Drive, then request the user to send the lyrics for both English and Korean versions.
 		
-		4. For each song title (and artist, if provided) WITHOUT a Google Drive file, search the web for the complete and accurate English lyrics. Do not verbose or hallucinate. 
-			If you cannot find the English version of the lyrics, indicate that you are unable to retrieve them.
-		
-		5. For each song title (and artist, if provided) WITHOUT a Google Drive file, search the web for the complete and accurate Korean lyrics. Do not verbose or hallucinate. 
-			If you cannot find the Korean version of the lyrics, indicate that you are unable to retrieve them.
-		
-		6. Break each version of the song lyrics down into verses, choruses, and bridges as appropriate.
-		
-		7. If both the English and Korean versions exist, skip this step. 
-			If either version of the lyrics is missing, translate the missing version yourself, ensuring accuracy and maintaining the original meaning.
+		5. If the user can only send lyrics in one language, translate the missing version yourself ensuring accuracy and maintaining the original meaning.
 			Be faithful to the structure of the song. 
 		
-		8. Match the English and Korean lyrics line by line, ensuring that each line corresponds correctly between the two languages.
+		6. Match the English and Korean lyrics line by line, ensuring that each line corresponds correctly between the two languages.
+            Ensure you are adhering to the song structure (verses, choruses, bridges, etc.) when matching lines. If necessary, make minor adjustments in terms of newlines to maintain alignment.
 		
-		9. Compile the list into a JSON string containing english and korean lyric pairs for all the songs. Each line should match as the song goes. 
+		7. Compile the list into a JSON string containing english and korean lyric pairs for all the songs. Each line should match as the song goes. 
 			Each value for each key in the dictionary should be maximum two lines long, separated by a newline character (\n).
+            It is imperative that each line in English matches the corresponding line in Korean.
 			Important: Return ONLY a valid JSON string (no explanatory text). The JSON must be a list of objects:
 			[
 				{"english": "line1\nline2", "korean": "라인1\n라인2"},
@@ -162,14 +303,19 @@ lyric_retriever_agent = Agent(
 				{"english": "Amazing grace, how sweet the sound\nThat saved a wretch like me", "korean": "나 같은 죄인 살리신\n주 은혜 놀라워"},
 			]
 		
-		10. Return the compiled lyrics and print them.
+		8. Return the compiled lyrics and print them.
+
+        9. For any songs given by the user, save the lyrics files to Google Drive using the 'drive_save_lyrics' tool. 
+            The lyrics should be saved 'slide-by-slide' meaning it should be english then korean, then next english then next korean, etc.
 		
-		PRIORITY: Always check Google Drive files first before searching the web. This saves time and ensures consistency.
+		PRIORITY: Always check Google Drive files first before asking the user for lyrics.
 	""",
 	generate_content_config = GenerateContentConfig(
 		temperature=0.01,
 	),
         tools=[
         find_files_by_name,
+        preview_youtube_playlist,
+        drive_save_lyrics
     ],
 )
