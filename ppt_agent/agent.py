@@ -25,11 +25,11 @@ root_agent = Agent(
         
         
 		You should follow these steps:
-		1. Given a list of songs provided by the user, use the LyricRetrieverAgent to fetch the list of korean songs from a Youtube playlist link.
+		1. Given a list of songs provided by the user, first determine whether the service is for Friday or Sunday by reading the input text - it'll contain whether it's friday or sunday. Use the LyricRetrieverAgent to fetch the list of korean songs from a Youtube playlist link.
         2. Then use the LyricRetrieverAgent to fetch the full lyrics for each song in both Korean and English - first, by checking if the lyrics
-        	already exist in Google Drive, and if not, request the user to provide the lyrics. Make sure you're asking the user for lyrics for all songs that are missing.
-            Sometimes the user won't be able to provide lyrics for both languages. If the user only provides one, you can use the Lyric Retriever Agent to translate the missing version.
-		3. Then parse the file path to the JSON file and call the Slide Creator Agent which will accept the JSON string and convert it to a list of {"english", "korean"} pairs.
+        	already exist in Google Drive, and if not, request the user to provide the lyrics. If multiple songs are found in the google drive, ask the user to select which one. Input the chosen song to the LyricRetrieverAgent.
+            Make sure you're asking the user for lyrics for all songs that are missing. Sometimes the user won't be able to provide lyrics for both languages. If the user only provides one, you can use the Lyric Retriever Agent to translate the missing version.
+		3. Then parse the file path to the JSON file and call the Slide Creator Agent which will accept the JSON string and convert it to a list of {"english", "korean"} pairs. Ensure you use the correct template based on whether it's a Friday or Sunday service.
 			Do not use the Slide Creator Agent until you have the full JSON string ready with all the songs' lyrics.
 		4. Output the final PowerPoint presentation file once all slides have been created including the URL link to the presentation.
         

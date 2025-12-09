@@ -13,10 +13,11 @@ import json
 # --- CONFIG ---
 SCOPES = ['https://www.googleapis.com/auth/drive']  # or 'https://www.googleapis.com/auth/drive'
 TARGET_FOLDER_ID = '1PoqUg00k3BA1HOG1Nn4HyqpUhvdUT-YX'  # optional
-TEMPLATE_PRESENTATION_ID = '1FCivH5ECj72APlWDdsu_3BoHZN9LWbBl'
+TEMPLATE_SUNDAY_PRESENTATION_ID = '1FCivH5ECj72APlWDdsu_3BoHZN9LWbBl'
+TEMPLATE_FRIDAY_PRESENTATION_ID = '1LevZxXZWhVzD06DYpSTbddw9-t0RlU4M'
 
 
-def create_slides_file():
+def create_slides_file(TEMPLATE_ID = '1FCivH5ECj72APlWDdsu_3BoHZN9LWbBl'):
     """Creates a new Google Slides presentation using OAuth credentials."""
     creds = None
 
@@ -55,7 +56,7 @@ def create_slides_file():
 
         # Copy template presentation
         file = drive_service.files().copy(
-            fileId=TEMPLATE_PRESENTATION_ID,
+            fileId=TEMPLATE_ID,
             body=file_metadata
         ).execute()
 
@@ -282,7 +283,12 @@ slide_creator_agent = Agent(
         You are the Slide Creator Agent. Your task is to create PowerPoint slides based on
         the lyrics provided by the Lyric Retriever Agent. Follow these steps:
         1. Receive a list of {"english", "korean"} objects which containing the song lyrics.
-        2. Create a new PowerPoint presentation using the create_presentation() function. \
+        2. Create a new PowerPoint presentation using the create_presentation(TEMPLATE_ID) function. \
+            If the lyrics are for a Sunday service, use TEMPLATE_SUNDAY_PRESENTATION_ID. \
+            If the lyrics are for a Friday service, use TEMPLATE_FRIDAY_PRESENTATION_ID.
+            TEMPLATE_SUNDAY_PRESENTATION_ID = '1FCivH5ECj72APlWDdsu_3BoHZN9LWbBl'
+            TEMPLATE_FRIDAY_PRESENTATION_ID = '1LevZxXZWhVzD06DYpSTbddw9-t0RlU4M'
+        3. Each slide should contain a maximum of two lines for each language.
         4. Save and return the final PowerPoint presentation file.
     """,
     tools=[

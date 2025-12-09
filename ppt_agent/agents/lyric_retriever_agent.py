@@ -18,248 +18,279 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 import logging
 import html
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaIoBaseDownload
+import io
+from typing import List, Dict, Optional, Any
 
 
 
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl", "https://www.googleapis.com/auth/drive"]
+# Scopes: Drive, Docs, YouTube (as you used before)
+SCOPES = [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+]
 
+TOKEN_FILE = "./token.json"
+CREDENTIALS_FILE = "./credentials.json"
+
+
+def get_credentials(scopes=SCOPES) -> Credentials:
+    """
+    Obtain OAuth2 credentials, refreshing or running a local flow if needed.
+    Returns valid Credentials instance.
+    """
+    creds = None
+    if os.path.exists(TOKEN_FILE):
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, scopes)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            if not os.path.exists(CREDENTIALS_FILE):
+                raise FileNotFoundError(f"OAuth credentials file not found: {CREDENTIALS_FILE}")
+            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, scopes)
+            creds = flow.run_local_server(port=0)
+        with open(TOKEN_FILE, "w", encoding="utf-8") as token:
+            token.write(creds.to_json())
+    return creds
+
+
+def normalize(text: str) -> str:
+    """
+    Normalize a search string: remove excessive punctuation while keeping Korean/English/nums and spaces.
+    """
+    if not text:
+        return ""
+    # Keep Hangul, basic Latin, digits and spaces. Replace other characters with space.
+    cleaned = re.sub(r"[^0-9A-Za-z가-힣\s]", " ", text)
+    # collapse whitespace
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
 
 
 def preview_youtube_playlist(playlist_id: str):
     """
-    Fetch a YouTube playlist and return:
-      - video titles
-      - caption snippet (first available caption)
-
-    Args:
-        playlist_id: YouTube playlist ID
-
-    Returns:
-        List of dicts: [{'video_id', 'title'}]
+    Fetch a YouTube playlist and return list of {'video_id', 'title'}.
     """
+    creds = get_credentials()
+    youtube = build("youtube", "v3", credentials=creds)
 
-    print("🔐 Authenticating YouTube API...")
-    creds = None
-    # Authenticate if credentials not provided
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file('./credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
+    videos: List[Dict[str, str]] = []
+    next_page_token = None
 
     try:
-        youtube = build("youtube", "v3", credentials=creds)
-
-        videos = []
-        next_page_token = None
-
-        print(f"📂 Fetching playlist items for playlist: {playlist_id}")
-
-        # --- STEP 1: Fetch playlist videos ---
         while True:
             req = youtube.playlistItems().list(
-                part="snippet", playlistId=playlist_id, maxResults=50, pageToken=next_page_token
+                part="snippet",
+                playlistId=playlist_id,
+                maxResults=50,
+                pageToken=next_page_token,
             )
             res = req.execute()
-
             for item in res.get("items", []):
-                video_id = item["snippet"]["resourceId"]["videoId"]
-                title = item["snippet"]["title"]
-                videos.append({"video_id": video_id, "title": title})
-
+                vid = item["snippet"]["resourceId"].get("videoId")
+                title = item["snippet"].get("title", "")
+                videos.append({"video_id": vid, "title": title})
             next_page_token = res.get("nextPageToken")
             if not next_page_token:
                 break
-
-        print(f"📺 Found {len(videos)} videos in playlist.")
         return videos
-
-    except HttpError as error:
-        logging.error(f"❌ YouTube API error: {error}")
+    except HttpError as e:
+        logging.error(f"YouTube API error: {e}")
         return None
 
 
+def read_google_doc(docs_service, document_id: str):
+    """
+    Read a Google Doc's textual content and return plain text.
+    """
+    doc = docs_service.documents().get(documentId=document_id).execute()
+    body = doc.get("body", {}).get("content", [])
+    out = []
+    for structural_element in body:
+        # Paragraphs and tables can contain text runs
+        paragraph = structural_element.get("paragraph")
+        if paragraph:
+            text_run_parts = []
+            for el in paragraph.get("elements", []):
+                tr = el.get("textRun")
+                if tr and tr.get("content"):
+                    text_run_parts.append(tr["content"])
+            if text_run_parts:
+                out.append("".join(text_run_parts))
+        # You could expand to table cells etc. if needed
+    return "\n".join(out).strip()
 
-def find_files_by_name(search_name: str, folder_id: str = '1hiSf6DSAO2RIv7ZCT7ltU8uBYQFvaOQu'):
+
+def read_drive_file(drive_service, file_id: str, mime_type: Optional[str]):
     """
-    Find files in a Google Drive folder that match the input name (supports Korean).
-    If multiple matches found, prompts user to select one.
-    
-    Args:
-        search_name: The name to search for (can be in Korean)
-        folder_id: Google Drive folder ID to search within
-        creds: Google credentials object (if None, will authenticate)
-    
-    Returns:
-        Dictionary with file info {'id': file_id, 'name': file_name, 'content': file_content}, 
-        or None if no matches found
+    Read a file from Drive:
+    - If Google Doc, use Docs API (caller must provide credentials or build docs_service separately).
+    - If text/plain, download raw media.
     """
-    # Authenticate if credentials not provided
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file('./credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-    
-    drive_service = build('drive', 'v3', credentials=creds)
+    if mime_type == "application/vnd.google-apps.document":
+        docs_service = build("docs", "v1", credentials=get_credentials())
+        return read_google_doc(docs_service, file_id)
+    else:
+        # Attempt to download file contents (works for .txt and other binary types; we decode as utf-8)
+        try:
+            request = drive_service.files().get_media(fileId=file_id)
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+            fh.seek(0)
+            data = fh.read()
+            # try decode, fallback to latin-1 if necessary
+            try:
+                return data.decode("utf-8")
+            except UnicodeDecodeError:
+                try:
+                    return data.decode("utf-8-sig")
+                except Exception:
+                    return data.decode("latin-1", errors="ignore")
+        except HttpError as e:
+            logging.error(f"Error downloading file {file_id}: {e}")
+            return None
+
+
+def find_files_by_name(
+    search_name: str, folder_id: str = '1hiSf6DSAO2RIv7ZCT7ltU8uBYQFvaOQu', page_size: int = 20
+):
+    """
+    Find files in Google Drive that match a search string.
+    Returns list of file dicts: [{'id','name','mimeType','snippet'(optional)}...]
+    Tries name contains to match content inside Google Docs.
+    """
+    creds = get_credentials()
+    drive_service = build("drive", "v3", credentials=creds)
+
+    clean = normalize(search_name)
+    # Build query safely. Use either name or fullText match
+    q_parts = []
+    if clean:
+        # escape single quotes by replacing with \'
+        clean_escaped = clean.replace("'", "\\'")
+        q_parts.append(f"name contains '{clean_escaped}'")
+    else:
+        q_parts.append("trashed=false")
+
+    q_parts.append("trashed=false")
+    if folder_id:
+        q_parts.append(f"'{folder_id}' in parents")
+
+    query = " and ".join(q_parts)
+
     try:
-        # Build query to search for files in the folder matching the name
-        query = f"name contains '{search_name}' and trashed=false"
-        
-        if folder_id:
-            query += f" and '{folder_id}' in parents"
-        
         results = drive_service.files().list(
             q=query,
-            spaces='drive',
-            fields='files(id, name, mimeType)',
-            pageSize=10
+            spaces="drive",
+            fields="nextPageToken, files(id, name, mimeType)",
+            pageSize=page_size,
         ).execute()
-        
-        items = results.get('files', [])
-        print(items)
-        
+        items = results.get("files", [])
         if not items:
-            print(f"❌ No files found matching: '{search_name}'")
             return None
-        
-        if len(items) == 1:
-            file_id = items[0]['id']
-            file_name = items[0]['name']
-            print(f"\n✅ Single file found matching '{search_name}': {file_name}\n")
-            
-            # Read file content if it's a text file
-            if items[0].get('mimeType') == 'text/plain':
-                content = drive_service.files().get_media(fileId=file_id).execute().decode('utf-8')
-                return {'id': file_id, 'name': file_name, 'content': content}
-            return {'id': file_id, 'name': file_name, 'content': None}
-        
-        # Multiple matches found - ask user to select
-        print(f"\n⚠️ Multiple files found matching '{search_name}':\n")
-        for idx, item in enumerate(items, 1):
-            print(f"  {idx}. {item['name']}")
-            print(f"     📍 ID: {item['id']}\n")
-        
-        while True:
+
+        # Attach snippet/content for each item if possible (read small snippets only)
+        out = []
+        for item in items:
+            file_id = item["id"]
+            mime = item.get("mimeType")
+            # Read the file content (full) if it's reasonable; caller can choose
+            content = None
             try:
-                choice = input(f"Please select a file (1-{len(items)}): ").strip()
-                choice_idx = int(choice) - 1
-                
-                if 0 <= choice_idx < len(items):
-                    selected_item = items[choice_idx]
-                    file_id = selected_item['id']
-                    file_name = selected_item['name']
-                    print(f"\n✅ Selected: {file_name}\n")
-                    
-                    # Read file content if it's a text file
-                    if selected_item.get('mimeType') == 'text/plain':
-                        content = drive_service.files().get_media(fileId=file_id).execute().decode('utf-8')
-                        return {'id': file_id, 'name': file_name, 'content': content}
-                    return {'id': file_id, 'name': file_name, 'content': None}
-                else:
-                    print(f"❌ Invalid selection. Please enter a number between 1 and {len(items)}.")
-            except ValueError:
-                print(f"❌ Invalid input. Please enter a valid number.")
-    
-    except HttpError as error:
-        print(f"❌ An API error occurred: {error}")
+                content = read_drive_file(drive_service, file_id, mime)
+            except Exception as e:
+                logging.warning(f"Could not read content for {file_id}: {e}")
+            out.append({"id": file_id, "name": item.get("name"), "mimeType": mime, "content": content})
+        return out
+    except HttpError as e:
+        logging.error(f"Drive API error during search: {e}")
         return None
 
 
-def drive_save_lyrics(lyrics_list: list[dict], folder_id: str = '1hiSf6DSAO2RIv7ZCT7ltU8uBYQFvaOQu'):
+def drive_save_lyrics(lyrics_list: List[Dict[str, str]], folder_id: str = '1hiSf6DSAO2RIv7ZCT7ltU8uBYQFvaOQu'):
     """
     Save each song's lyrics as a separate Google Doc in the given Drive folder.
-    Each created doc's name will be "KoreanTitle / EnglishTitle" (falling back to whichever is available).
-
-    Args:
-        lyrics_list: list of dicts with keys:
-            - 'korean_title' or 'korean'
-            - 'english_title' or 'english'
-            - 'korean_lyrics' or 'korean'
-            - 'english_lyrics' or 'english'
-        folder_id: Drive folder ID to place created docs into.
-
-    Returns:
-        List of dicts: [{'id': <doc_id>, 'name': <doc_name>}, ...]
+    Each doc will be named "KoreanTitle / EnglishTitle" (fall back to unique id).
+    lyrics_list entries should include keys:
+        - 'korean_title' or 'korean'
+        - 'english_title' or 'english'
+        - 'korean_lyrics' or 'korean'
+        - 'english_lyrics' or 'english'
+    Returns list of created file metadata [{'id', 'name'}]
     """
-    creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file('./credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-
-    drive_service = build('drive', 'v3', credentials=creds)
-    docs_service = build('docs', 'v1', credentials=creds)
+    creds = get_credentials()
+    drive_service = build("drive", "v3", credentials=creds)
+    docs_service = build("docs", "v1", credentials=creds)
 
     created_files = []
+
     for entry in lyrics_list:
-        # normalize fields
-        eng_title = entry.get('english_title') or entry.get('english') or ''
-        kor_title = entry.get('korean_title') or entry.get('korean') or ''
-        eng_lyrics = entry.get('english_lyrics') or entry.get('english') or ''
-        kor_lyrics = entry.get('korean_lyrics') or entry.get('korean') or ''
+        eng_title = entry.get("english_title") or entry.get("english") or ""
+        kor_title = entry.get("korean_title") or entry.get("korean") or ""
+        eng_lyrics = entry.get("english_lyrics") or entry.get("english_lyrics") or entry.get("english") or ""
+        kor_lyrics = entry.get("korean_lyrics") or entry.get("korean_lyrics") or entry.get("korean") or ""
 
         name_parts = []
-        if kor_title:
+        if kor_title.strip():
             name_parts.append(kor_title.strip())
-        if eng_title:
+        if eng_title.strip():
             name_parts.append(eng_title.strip())
+
         doc_name = " / ".join(name_parts) if name_parts else f"lyrics-{uuid.uuid4().hex[:8]}"
 
         try:
-            # Create a Google Doc (blank) in the specified folder
             file_metadata = {
-                'name': doc_name,
-                'parents': [folder_id] if folder_id else [],
-                'mimeType': 'application/vnd.google-apps.document'
+                "name": doc_name,
+                "mimeType": "application/vnd.google-apps.document",
             }
-            new_file = drive_service.files().create(body=file_metadata, fields='id,name').execute()
-            doc_id = new_file.get('id')
+            if folder_id:
+                file_metadata["parents"] = [folder_id]
 
-            # Build the content to insert
+            new_file = drive_service.files().create(body=file_metadata, fields="id,name").execute()
+            doc_id = new_file.get("id")
+
+            # Prepare content: english then korean (slide-by-slide style requested)
+            # We'll create a single ordered list: English Title -> English Lyrics -> Korean Title -> Korean Lyrics
+            # Break into lines and ensure we insert line-by-line to preserve structure
             parts = []
             if eng_title:
-                parts.append(f"English Title: {eng_title}\n")
+                parts.append(f"English Title: {eng_title}")
             if eng_lyrics:
-                parts.append(f"{eng_lyrics}\n\n")
+                parts.extend([line for line in eng_lyrics.splitlines()])
             if kor_title:
-                parts.append(f"Korean Title: {kor_title}\n")
+                parts.append("")  # blank line separator
+                parts.append(f"Korean Title: {kor_title}")
             if kor_lyrics:
-                parts.append(f"{kor_lyrics}\n")
+                parts.extend([line for line in kor_lyrics.splitlines()])
 
-            content = "\n".join(parts).strip() or ""
+            # Build batchUpdate requests: insert each line at increasing index
+            requests = []
+            # Insert at index 1 (start of doc). We'll insert a newline after each line so spacing is preserved.
+            cursor_index = 1
+            for idx, line in enumerate(parts):
+                # ensure each inserted chunk ends with newline (except maybe last — Docs handles final newline fine)
+                text_to_insert = f"{line}\n"
+                requests.append({"insertText": {"location": {"index": cursor_index}, "text": text_to_insert}})
+                cursor_index += len(text_to_insert)
 
-            if content:
-                # Insert text at the start of the document
-                requests = [
-                    {"insertText": {"location": {"index": 1}, "text": content}}
-                ]
+            if requests:
                 docs_service.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
 
-            created_files.append({"id": doc_id, "name": new_file.get('name')})
+            created_files.append({"id": doc_id, "name": new_file.get("name")})
         except Exception as e:
             logging.error(f"Failed to create doc for '{doc_name}': {e}")
-            # continue with other entries
 
     return created_files
-
 
 
 lyric_retriever_agent = Agent(
