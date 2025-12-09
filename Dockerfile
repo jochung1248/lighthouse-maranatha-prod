@@ -6,6 +6,9 @@ WORKDIR /app
 # Copy only dependency list first for Docker layer caching
 COPY requirements.txt .
 
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8080
+
 # Install runtime dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -19,4 +22,4 @@ ENV PYTHONUNBUFFERED=1
 # EXPOSE 8080
 
 # Run the agent module (executes ppt_agent/agent.py as a module)
-CMD ["python", "-m", "ppt_agent.agent"]
+CMD ["sh", "-c", "exec uvicorn ppt_agent.server:app --host 0.0.0.0 --port ${PORT} --log-level info"]

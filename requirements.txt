@@ -7,3 +7,5 @@ google-auth-oauthlib
 
 pandas
 numpy
+fastapi
+uvicorn
