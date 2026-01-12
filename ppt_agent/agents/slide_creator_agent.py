@@ -31,10 +31,10 @@ def create_slides_file(TEMPLATE_ID = '1FCivH5ECj72APlWDdsu_3BoHZN9LWbBl'):
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(
-                './credentials.json', SCOPES)
+                './ppt_agent/credentials.json', SCOPES)
             creds = flow.run_local_server(port=0)
         # Save the credentials for next time
-        with open('token.json', 'w') as token:
+        with open('./ppt_agent/token.json', 'w') as token:
             token.write(creds.to_json())
 
     try:
@@ -77,8 +77,8 @@ def add_lyric_slide(presentation_id, english, korean, insertion_index=5):
     - English (top) — yellow, Arial Black, 24pt, centered
     - Korean  (below) — white, Arial, 24pt, centered
     """
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    if os.path.exists('./ppt_agent/token.json'):
+        creds = Credentials.from_authorized_user_file('./ppt_agent/token.json', SCOPES)
     else:
         raise RuntimeError("token.json not found; run OAuth flow first")
 
