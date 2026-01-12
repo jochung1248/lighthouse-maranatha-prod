@@ -36,8 +36,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
 
-TOKEN_FILE = "./token.json"
-CREDENTIALS_FILE = "./credentials.json"
+TOKEN_FILE = "./ppt_agent/token.json"
+CREDENTIALS_FILE = "./ppt_agent/credentials.json"
 
 
 def get_credentials(scopes=SCOPES) -> Credentials:
